@@ -457,6 +457,35 @@ static void park_profile(pa_droid_profile *dp) {
     };
 }
 
+/* This vendor HAL re-configures the codec backend when the mode changes to
+ * AUDIO_MODE_IN_CALL, and with an output stream still active it walks its
+ * calibration tables while switching devices and takes the process down. Hold
+ * the other outputs suspended across the mode change so the HAL finds no active
+ * usecase: pa_sink_suspend() runs the droid sink's own standby, which stops the
+ * stream in the HAL and stops the IO thread from writing, and a call stops
+ * those streams anyway. The primary output is left alone - the call routes
+ * through it. */
+static void suspend_other_outputs(struct userdata *u, bool suspend) {
+    pa_droid_stream *stream, *primary;
+    void *state = NULL;
+
+    pa_assert(u);
+
+    pa_log_debug("%s other outputs for call mode.", suspend ? "Suspending" : "Resuming");
+
+    primary = pa_droid_hw_primary_output_stream(u->hw_module);
+
+    PA_IDXSET_FOREACH(stream, u->hw_module->outputs, state) {
+        pa_sink *sink;
+
+        if (stream == primary)
+            continue;
+
+        if ((sink = pa_droid_stream_get_data(stream)))
+            pa_sink_suspend(sink, suspend, PA_SUSPEND_APPLICATION);
+    }
+}
+
 static pa_droid_profile *card_get_droid_profile(pa_card_profile *cp) {
     struct profile_data *pd;
 
@@ -611,6 +640,10 @@ static pa_card_profile *leave_virtual_profile(struct userdata *u, pa_card *c,
 
     if (next->mode != current->mode) {
         park_profile(card_get_droid_profile(u->real_profile));
+        if (next->mode == AUDIO_MODE_IN_CALL)
+            suspend_other_outputs(u, true);
+        else if (current->mode == AUDIO_MODE_IN_CALL)
+            suspend_other_outputs(u, false);
         pa_droid_hw_set_mode(u->hw_module, next->mode);
     }
 
@@ -664,6 +697,10 @@ static void enter_virtual_profile(struct userdata *u, pa_card *c,
 
     if (next->mode != current->mode) {
         park_profile(card_get_droid_profile(u->real_profile));
+        if (next->mode == AUDIO_MODE_IN_CALL)
+            suspend_other_outputs(u, true);
+        else if (current->mode == AUDIO_MODE_IN_CALL)
+            suspend_other_outputs(u, false);
         pa_droid_hw_set_mode(u->hw_module, next->mode);
     }
 
